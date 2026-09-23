@@ -33,15 +33,25 @@ DPD_LAG_MTHS = 3                # 90 DPD ~= 3 months after the last payment
 SPLIT_DATE   = "2016-07-01"     # out-of-time boundary (train < split <= test)
 
 # Post-outcome columns: must NEVER reach the model as features.
-# TODO: audit the full schema and extend; when in doubt, exclude.
+# Audited against the full 151-column schema in S1. When in doubt, exclude.
 LEAKAGE_COLS = [
-    "loan_status", "last_pymnt_d", "last_pymnt_amnt", "next_pymnt_d",
-    "last_credit_pull_d", "recoveries", "collection_recovery_fee",
+    # loan performance after origination
+    "loan_status", "pymnt_plan", "last_pymnt_d", "last_pymnt_amnt", "next_pymnt_d",
+    "recoveries", "collection_recovery_fee",
     "total_pymnt", "total_pymnt_inv", "total_rec_prncp", "total_rec_int",
-    "total_rec_late_fee", "out_prncp", "out_prncp_inv", "debt_settlement_flag",
-    "hardship_flag", "settlement_status", "settlement_amount",
+    "total_rec_late_fee", "out_prncp", "out_prncp_inv",
+    # credit bureau pulled AFTER origination (refreshed FICO)
+    "last_credit_pull_d", "last_fico_range_high", "last_fico_range_low",
+    # hardship programme (post-origination)
+    "hardship_flag", "hardship_type", "hardship_reason", "hardship_status",
+    "deferral_term", "hardship_amount", "hardship_start_date", "hardship_end_date",
+    "payment_plan_start_date", "hardship_length", "hardship_dpd",
+    "hardship_loan_status", "orig_projected_additional_accrued_interest",
+    "hardship_payoff_balance_amount", "hardship_last_payment_amount",
+    # debt settlement (post-default)
+    "debt_settlement_flag", "debt_settlement_flag_date", "settlement_status",
+    "settlement_date", "settlement_amount", "settlement_percentage", "settlement_term",
 ]
-
 # Default = 90+ DPD / charged off (Basel Art. 178 flavour). 'Late (31-120 days)'
 # is deliberately excluded: it mixes pre- and post-90-DPD accounts.
 DEFAULT_STATUSES = ["Charged Off", "Default"]
@@ -50,13 +60,16 @@ DEFAULT_STATUSES = ["Charged Off", "Default"]
 def build(con: duckdb.DuckDBPyConnection) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # --- 1. STAGE: register raw CSV, no mutation ------------------------------ #
+      # --- 1. STAGE: register raw CSV, no mutation ------------------------------ #
     # Force the two date strings to VARCHAR so strptime is deterministic.
+    # null_padding: the Kaggle file has a few one-field summary lines; pad them
+    # with NULLs instead of erroring (they're dropped later: loan_status is NULL).
     con.execute(f"""
         CREATE OR REPLACE VIEW raw AS
         SELECT * FROM read_csv_auto(
             '{RAW_CSV.as_posix()}',
             SAMPLE_SIZE=-1,
+            null_padding=true,
             types={{'issue_d': 'VARCHAR', 'last_pymnt_d': 'VARCHAR'}}
         );
     """)
@@ -104,7 +117,9 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
             TRY_CAST(REPLACE(CAST(int_rate AS VARCHAR), '%', '') AS DOUBLE)  AS int_rate,
             annual_inc,
             dti,
-            CAST(regexp_extract(emp_length, '\\d+') AS INTEGER)                AS emp_years,
+            CASE WHEN emp_length LIKE '<%' THEN 0          -- '< 1 year' -> 0, not 1
+                 ELSE TRY_CAST(regexp_extract(emp_length, '\\d+') AS INTEGER)
+            END                                                              AS emp_years,
             CAST(regexp_extract(term, '\\d+') AS INTEGER)                      AS term_months,
             loan_amnt / NULLIF(annual_inc, 0)                                  AS loan_to_income,
             grade,
@@ -113,19 +128,19 @@ def build(con: duckdb.DuckDBPyConnection) -> None:
             verification_status
         FROM clean;
     """)
-
-    # --- 4. OUT-OF-TIME SPLIT ------------------------------------------------- #
+        # --- 4. OUT-OF-TIME SPLIT ------------------------------------------------- #
+    # orig_date is kept in the files as a split/monitoring key (EDA by vintage,
+    # PSI by period). It is NOT a model feature: modelling code must drop it.
     con.execute(f"""
-        COPY (SELECT * EXCLUDE (orig_date) FROM features
+        COPY (SELECT * FROM features
               WHERE orig_date <  DATE '{SPLIT_DATE}')
         TO '{(OUT_DIR / "train.parquet").as_posix()}' (FORMAT PARQUET);
     """)
     con.execute(f"""
-        COPY (SELECT * EXCLUDE (orig_date) FROM features
+        COPY (SELECT * FROM features
               WHERE orig_date >= DATE '{SPLIT_DATE}')
         TO '{(OUT_DIR / "test.parquet").as_posix()}' (FORMAT PARQUET);
     """)
-
     # --- 5. SANITY CHECKS ----------------------------------------------------- #
     for name, cond in [("train", f"< DATE '{SPLIT_DATE}'"),
                        ("test",  f">= DATE '{SPLIT_DATE}'")]:
