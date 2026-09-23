@@ -59,6 +59,7 @@ jupyter lab                     # run notebooks/01 → 04 in order
 ## Caveats
 - Open-data default rate is not through-the-cycle; PDs are calibrated to the sample
   central tendency, noted as a limitation.
+  Checked for right-censoring at the end of the cohort; late-2017 default rates are in line with earlier quarters
 - `<other honest limitations>`
 
 ## Companion repo
