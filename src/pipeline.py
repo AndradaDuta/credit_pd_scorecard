@@ -52,7 +52,7 @@ LEAKAGE_COLS = [
     "debt_settlement_flag", "debt_settlement_flag_date", "settlement_status",
     "settlement_date", "settlement_amount", "settlement_percentage", "settlement_term",
 ]
-# Default = 90+ DPD / charged off (Basel Art. 178 flavour). 'Late (31-120 days)'
+# Default = 90+ DPD / charged off (CRR Art. 178 flavour). 'Late (31-120 days)'
 # is deliberately excluded: it mixes pre- and post-90-DPD accounts.
 DEFAULT_STATUSES = ["Charged Off", "Default"]
 
